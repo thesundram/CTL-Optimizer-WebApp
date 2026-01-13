@@ -220,6 +220,46 @@ export function CTLProvider({ children }: { children: ReactNode }) {
         status: allocatedCoilIds.has(c.id) ? "used" : c.status,
       })),
     )
+
+    // Get all allocated order IDs and their allocation details
+    const orderAllocationMap = new Map<string, { totalAllocated: number; isPartial: boolean }>()
+
+    confirmedAssignments.forEach((assignment) => {
+      if (assignment.orderAllocations) {
+        assignment.orderAllocations.forEach((alloc) => {
+          // alloc.orderId is the internal order.id, not the user-entered orderId
+          const existing = orderAllocationMap.get(alloc.orderId) || { totalAllocated: 0, isPartial: false }
+          orderAllocationMap.set(alloc.orderId, {
+            totalAllocated: existing.totalAllocated + alloc.allocatedWeight,
+            isPartial: existing.isPartial || alloc.isPartial,
+          })
+        })
+      } else {
+        // Fallback for assignments without orderAllocations - use orderIds array which contains internal IDs
+        assignment.orderIds.forEach((orderId) => {
+          const order = orders.find((o) => o.id === orderId)
+          if (order) {
+            orderAllocationMap.set(orderId, { totalAllocated: order.weight, isPartial: false })
+          }
+        })
+      }
+    })
+
+    // Update order statuses using order.id (internal ID) for lookup
+    setOrders(
+      orders.map((order) => {
+        const allocation = orderAllocationMap.get(order.id) // Use order.id instead of order.orderId
+        if (!allocation) {
+          return { ...order, status: "pending" as const }
+        }
+        // Check if fully allocated (allocation weight >= order weight) or mark as assigned
+        const isFullyAllocated = allocation.totalAllocated >= order.weight * 0.99 // 99% tolerance
+        return {
+          ...order,
+          status: isFullyAllocated ? ("completed" as const) : ("assigned" as const),
+        }
+      }),
+    )
   }
 
   const clearAssignments = () => {
