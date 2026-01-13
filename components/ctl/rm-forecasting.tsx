@@ -38,7 +38,7 @@ export default function RMForecasting() {
     const actualConsumedPercentage = isUnused ? 0 : (cappedConsumedWeight / coil.weight) * 100
     const actualBalancePercentage = isUnused ? 100 : (actualBalanceWeight / coil.weight) * 100
 
-    const isFullyUsedBy6PercentRule = !isUnused && actualBalancePercentage < 2
+    const isFullyUsedBy6PercentRule = !isUnused && actualBalancePercentage < 6
 
     return {
       ...coil,
@@ -271,7 +271,7 @@ export default function RMForecasting() {
 
           <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mt-2">
             <p className="text-sm text-yellow-800 font-medium">
-              <span className="font-bold">Note:</span> As Balance % is &lt;2%, it is considered as 100% used (Fully Used
+              <span className="font-bold">Note:</span> As Balance % is &lt;6%, it is considered as 100% used (Fully Used
               status).
             </p>
           </div>
