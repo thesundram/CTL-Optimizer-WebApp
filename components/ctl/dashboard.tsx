@@ -43,31 +43,65 @@ export default function Dashboard() {
 
   const totalScrap = allAssignments.reduce((sum, a) => sum + a.sideScrap + a.endScrap, 0)
 
-  const getOrderBreakdown = (assign: (typeof allAssignments)[0]) => {
-    const coil = coils.find((c) => c.id === assign.coilId)
-    const assignOrders = orders.filter((o) => assign.orderIds.includes(o.id))
-    const totalCoilWeight = coil?.weight || 1
-
-    const orderBreakdown = assignOrders.map((order, idx) => {
-      const allocation = assign.orderAllocations?.find((oa) => oa.orderId === order.id)
-      const orderWeight = allocation?.allocatedWeight || order.weight || 0
-      const percentage = (orderWeight / totalCoilWeight) * 100
-      return {
-        orderId: order.orderId,
-        percentage: Math.min(percentage, 100),
-        weight: orderWeight,
-        color: ORDER_COLORS[idx % ORDER_COLORS.length],
+  const getCoilWiseBreakdown = () => {
+    const coilOrderMap: Record<
+      string,
+      {
+        coilId: string
+        coilName: string
+        coilWeight: number
+        coilProduct: string
+        coilWidth: number
+        coilThickness: number
+        coilGrade: string
+        orders: { orderId: string; orderName: string; allocatedWeight: number; color: string }[]
       }
+    > = {}
+
+    allAssignments.forEach((assign) => {
+      const coil = coils.find((c) => c.id === assign.coilId)
+      if (!coil) return
+
+      if (!coilOrderMap[assign.coilId]) {
+        coilOrderMap[assign.coilId] = {
+          coilId: coil.id,
+          coilName: coil.coilId,
+          coilWeight: coil.weight,
+          coilProduct: coil.product,
+          coilWidth: coil.width,
+          coilThickness: coil.thickness,
+          coilGrade: coil.grade,
+          orders: [],
+        }
+      }
+
+      assign.orderIds.forEach((orderId) => {
+        const order = orders.find((o) => o.id === orderId)
+        if (!order) return
+
+        const orderAllocation = assign.orderAllocations?.find((oa) => oa.orderId === orderId)
+        const allocatedWeight = orderAllocation?.allocatedWeight || order.weight || 0
+
+        // Check if order already added to this coil
+        const existingOrder = coilOrderMap[assign.coilId].orders.find((o) => o.orderId === orderId)
+        if (!existingOrder) {
+          coilOrderMap[assign.coilId].orders.push({
+            orderId: orderId,
+            orderName: order.orderId,
+            allocatedWeight: allocatedWeight,
+            color: ORDER_COLORS[coilOrderMap[assign.coilId].orders.length % ORDER_COLORS.length],
+          })
+        } else {
+          // Add to existing allocation
+          existingOrder.allocatedWeight += allocatedWeight
+        }
+      })
     })
 
-    const totalOrderPercentage = orderBreakdown.reduce((sum, o) => sum + o.percentage, 0)
-    const scrapPercentage = Math.max(0, 100 - totalOrderPercentage)
-
-    const balancePercentage = scrapPercentage > 6 ? scrapPercentage : 0
-    const actualScrapPercentage = scrapPercentage <= 6 ? scrapPercentage : 0
-
-    return { orderBreakdown, scrapPercentage: actualScrapPercentage, balancePercentage }
+    return Object.values(coilOrderMap)
   }
+
+  const coilWiseBreakdown = getCoilWiseBreakdown()
 
   const getMultiCoilOrders = () => {
     const orderCoilMap: Record<
@@ -98,12 +132,18 @@ export default function Dashboard() {
         const orderAllocation = assign.orderAllocations?.find((oa) => oa.orderId === orderId)
         const allocatedWeight = orderAllocation?.allocatedWeight || order.weight || 0
 
-        orderCoilMap[orderId].coils.push({
-          coilId: coil.id,
-          coilName: coil.coilId,
-          allocatedWeight: allocatedWeight,
-          color: COIL_COLORS[orderCoilMap[orderId].coils.length % COIL_COLORS.length],
-        })
+        // Check if this coil already added to this order
+        const existingCoil = orderCoilMap[orderId].coils.find((c) => c.coilId === coil.id)
+        if (!existingCoil) {
+          orderCoilMap[orderId].coils.push({
+            coilId: coil.id,
+            coilName: coil.coilId,
+            allocatedWeight: allocatedWeight,
+            color: COIL_COLORS[orderCoilMap[orderId].coils.length % COIL_COLORS.length],
+          })
+        } else {
+          existingCoil.allocatedWeight += allocatedWeight
+        }
       })
     })
 
@@ -144,25 +184,29 @@ export default function Dashboard() {
           <Card className="p-6">
             <h2 className="mb-4 text-xl font-semibold">Coil-wise Order Allocation</h2>
             <div className="space-y-6">
-              {allAssignments.map((assign, idx) => {
-                const coil = coils.find((c) => c.id === assign.coilId)
-                const { orderBreakdown, scrapPercentage, balancePercentage } = getOrderBreakdown(assign)
+              {coilWiseBreakdown.map((coilData, idx) => {
+                const totalAllocated = coilData.orders.reduce((sum, o) => sum + o.allocatedWeight, 0)
+                const consumptionPercentage = (totalAllocated / coilData.coilWeight) * 100
+                const remainingPercentage = Math.max(0, 100 - consumptionPercentage)
+
+                const balancePercentage = remainingPercentage > 6 ? remainingPercentage : 0
+                const scrapPercentage = remainingPercentage <= 6 ? remainingPercentage : 0
 
                 return (
                   <div key={idx} className="border border-border rounded-lg p-4 bg-card">
                     <div className="flex items-center justify-between mb-3">
                       <div>
-                        <h3 className="font-semibold text-lg">{coil?.coilId || "Unknown Coil"}</h3>
+                        <h3 className="font-semibold text-lg">{coilData.coilName}</h3>
                         <p className="text-sm text-muted-foreground">
-                          {coil?.product} | {coil?.width}mm × {coil?.thickness}mm | {coil?.weight?.toFixed(3)} MT |
-                          Grade: {coil?.grade}
+                          {coilData.coilProduct} | {coilData.coilWidth}mm × {coilData.coilThickness}mm |{" "}
+                          {coilData.coilWeight?.toFixed(3)} MT | Grade: {coilData.coilGrade}
                         </p>
                       </div>
                       <div className="text-right">
-                        <div className="text-lg font-bold text-green-600">
-                          {assign.coilConsumption?.toFixed(1)}% Used
-                        </div>
-                        <div className="text-sm text-red-600">{scrapPercentage.toFixed(1)}% Scrap</div>
+                        <div className="text-lg font-bold text-green-600">{consumptionPercentage.toFixed(1)}% Used</div>
+                        {scrapPercentage > 0 && (
+                          <div className="text-sm text-red-600">{scrapPercentage.toFixed(1)}% Scrap</div>
+                        )}
                         {balancePercentage > 0 && (
                           <div className="text-sm text-orange-600">{balancePercentage.toFixed(1)}% Un-load</div>
                         )}
@@ -170,24 +214,27 @@ export default function Dashboard() {
                     </div>
 
                     <div className="relative h-12 rounded-lg overflow-hidden border-2 border-gray-300 bg-gray-100 flex">
-                      {orderBreakdown.map((order, orderIdx) => (
-                        <div
-                          key={orderIdx}
-                          className="h-full flex items-center justify-center text-white text-xs font-bold border-r-2 border-white relative group"
-                          style={{
-                            width: `${order.percentage}%`,
-                            backgroundColor: order.color,
-                            minWidth: order.percentage > 0 ? "40px" : "0",
-                          }}
-                        >
-                          <span className="truncate px-1">{order.orderId}</span>
-                          <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 hidden group-hover:block z-10">
-                            <div className="bg-gray-900 text-white text-xs rounded py-1 px-2 whitespace-nowrap">
-                              {order.orderId}: {order.percentage.toFixed(1)}% ({order.weight.toFixed(3)} MT)
+                      {coilData.orders.map((order, orderIdx) => {
+                        const percentage = (order.allocatedWeight / coilData.coilWeight) * 100
+                        return (
+                          <div
+                            key={orderIdx}
+                            className="h-full flex items-center justify-center text-white text-xs font-bold border-r-2 border-white relative group"
+                            style={{
+                              width: `${percentage}%`,
+                              backgroundColor: order.color,
+                              minWidth: percentage > 0 ? "40px" : "0",
+                            }}
+                          >
+                            <span className="truncate px-1">{order.orderName}</span>
+                            <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 hidden group-hover:block z-10">
+                              <div className="bg-gray-900 text-white text-xs rounded py-1 px-2 whitespace-nowrap">
+                                {order.orderName}: {percentage.toFixed(1)}% ({order.allocatedWeight.toFixed(3)} MT)
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        )
+                      })}
                       {balancePercentage > 0 && (
                         <div
                           className="h-full flex items-center justify-center text-white text-xs font-bold bg-gray-500 relative group border-r-2 border-white"
@@ -197,7 +244,7 @@ export default function Dashboard() {
                           <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 hidden group-hover:block z-10">
                             <div className="bg-gray-900 text-white text-xs rounded py-1 px-2 whitespace-nowrap">
                               Un-load: {balancePercentage.toFixed(1)}% (
-                              {(((coil?.weight || 0) * balancePercentage) / 100).toFixed(3)} MT)
+                              {((coilData.coilWeight * balancePercentage) / 100).toFixed(3)} MT)
                             </div>
                           </div>
                         </div>
@@ -218,13 +265,16 @@ export default function Dashboard() {
                     </div>
 
                     <div className="mt-3 flex flex-wrap gap-2">
-                      {orderBreakdown.map((order, orderIdx) => (
-                        <div key={orderIdx} className="flex items-center gap-1 text-xs">
-                          <div className="w-3 h-3 rounded" style={{ backgroundColor: order.color }} />
-                          <span className="font-medium">{order.orderId}</span>
-                          <span className="text-muted-foreground">({order.percentage.toFixed(1)}%)</span>
-                        </div>
-                      ))}
+                      {coilData.orders.map((order, orderIdx) => {
+                        const percentage = (order.allocatedWeight / coilData.coilWeight) * 100
+                        return (
+                          <div key={orderIdx} className="flex items-center gap-1 text-xs">
+                            <div className="w-3 h-3 rounded" style={{ backgroundColor: order.color }} />
+                            <span className="font-medium">{order.orderName}</span>
+                            <span className="text-muted-foreground">({percentage.toFixed(1)}%)</span>
+                          </div>
+                        )
+                      })}
                       {balancePercentage > 0 && (
                         <div className="flex items-center gap-1 text-xs">
                           <div className="w-3 h-3 rounded bg-gray-500" />
