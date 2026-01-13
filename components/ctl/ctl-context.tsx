@@ -88,8 +88,11 @@ interface CTLContextType {
   actualAssignments: Assignment[]
   rmForecasts: RMForecast[]
   addLine: (line: CTLLine) => void
+  updateLine: (lineId: string, line: Partial<CTLLine>) => void
+  deleteLine: (lineId: string) => void
   addCoil: (coil: Coil) => void
   addOrder: (order: Order) => void
+  updateOrder: (orderId: string, order: Partial<Order>) => void
   bulkImportCoils: (coils: Omit<Coil, "id">[]) => void
   bulkImportOrders: (orders: Omit<Order, "id">[]) => void
   updateCoilStatus: (coilId: string, status: Coil["status"]) => void
@@ -156,12 +159,24 @@ export function CTLProvider({ children }: { children: ReactNode }) {
     setLines([...lines, { ...line, id: Date.now().toString() }])
   }
 
+  const updateLine = (lineId: string, updatedData: Partial<CTLLine>) => {
+    setLines(lines.map((l) => (l.id === lineId ? { ...l, ...updatedData } : l)))
+  }
+
+  const deleteLine = (lineId: string) => {
+    setLines(lines.filter((l) => l.id !== lineId))
+  }
+
   const addCoil = (coil: Coil) => {
     setCoils([...coils, { ...coil, id: Date.now().toString() }])
   }
 
   const addOrder = (order: Order) => {
     setOrders([...orders, { ...order, id: Date.now().toString() }])
+  }
+
+  const updateOrder = (orderId: string, updatedData: Partial<Order>) => {
+    setOrders(orders.map((o) => (o.id === orderId ? { ...o, ...updatedData } : o)))
   }
 
   const bulkImportCoils = (newCoils: Omit<Coil, "id">[]) => {
@@ -232,8 +247,11 @@ export function CTLProvider({ children }: { children: ReactNode }) {
         actualAssignments,
         rmForecasts,
         addLine,
+        updateLine,
+        deleteLine,
         addCoil,
         addOrder,
+        updateOrder,
         bulkImportCoils,
         bulkImportOrders,
         deleteCoil,
