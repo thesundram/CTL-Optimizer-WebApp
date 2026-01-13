@@ -167,8 +167,14 @@ export default function OrderManager() {
 
   const statusColor = {
     pending: "bg-gray-100 text-gray-800",
-    assigned: "bg-blue-100 text-blue-800",
+    assigned: "bg-yellow-100 text-yellow-800",
     completed: "bg-green-100 text-green-800",
+  }
+
+  const statusLabel = {
+    pending: "Pending",
+    assigned: "In Process",
+    completed: "Complete",
   }
 
   return (
@@ -362,7 +368,13 @@ export default function OrderManager() {
 
       <div className="grid gap-4">
         <h3 className="text-lg font-semibold">
-          Orders ({orders.filter((o) => o.status === "pending").length} pending)
+          Orders ({orders.length}) |
+          <span className="text-green-600 ml-2">{orders.filter((o) => o.status === "completed").length} Complete</span>{" "}
+          |
+          <span className="text-yellow-600 ml-2">
+            {orders.filter((o) => o.status === "assigned").length} In Process
+          </span>{" "}
+          |<span className="text-gray-600 ml-2">{orders.filter((o) => o.status === "pending").length} Pending</span>
         </h3>
         {orders.length === 0 ? (
           <Card className="p-6 text-center text-muted-foreground">
@@ -576,7 +588,7 @@ export default function OrderManager() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Badge className={statusColor[order.status]}>{order.status}</Badge>
+                      <Badge className={statusColor[order.status]}>{statusLabel[order.status]}</Badge>
                       <Button
                         variant="ghost"
                         size="sm"
