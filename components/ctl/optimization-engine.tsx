@@ -226,6 +226,129 @@ export default function OptimizationEngine() {
     return patterns
   }
 
+  const allocateOrdersToBalanceCoils = (
+    pendingOrderIds: Set<string>,
+    usedCoilCapacity: Map<string, number>,
+    logs: string[],
+  ): { patterns: CuttingPattern[]; fulfilledOrders: string[] } => {
+    const patterns: CuttingPattern[] = []
+    const fulfilledOrders: string[] = []
+
+    const pendingOrders = orders.filter((o) => pendingOrderIds.has(o.id)).sort((a, b) => a.priority - b.priority)
+
+    logs.push(`Pass 3: Checking ${pendingOrders.length} pending orders against coil balances`)
+
+    for (const order of pendingOrders) {
+      let remainingOrderWeight = order.weight
+      const orderPatterns: CuttingPattern[] = []
+
+      console.log(`[v0] Pass 3 - Checking order ${order.orderId}:`)
+      console.log(
+        `[v0]   Order specs: Grade=${order.grade}, Thickness=${order.thickness}, Width=${order.width}, Product=${order.product}, Weight=${order.weight?.toFixed(2)}`,
+      )
+
+      // Find all coils with available balance that are compatible
+      const coilsWithBalance = coils
+        .map((coil) => {
+          const usedCapacity = usedCoilCapacity.get(coil.id) || 0
+          const availableBalance = coil.weight - usedCapacity
+          return { coil, availableBalance, usedCapacity }
+        })
+        .filter(({ coil, availableBalance }) => {
+          const hasBalance = availableBalance > 0
+          const gradeMatch = coil.grade === order.grade
+          const thicknessMatch = coil.thickness === order.thickness
+          const productMatch = coil.product === order.product
+          const widthMatch = coil.width >= order.width
+
+          console.log(
+            `[v0]   Coil ${coil.coilId}: Balance=${availableBalance.toFixed(2)}MT, Grade=${coil.grade}(${gradeMatch ? "OK" : "FAIL"}), Thickness=${coil.thickness}(${thicknessMatch ? "OK" : "FAIL"}), Product=${coil.product}(${productMatch ? "OK" : "FAIL"}), Width=${coil.width}(${widthMatch ? "OK" : "FAIL"})`,
+          )
+
+          return hasBalance && gradeMatch && thicknessMatch && productMatch && widthMatch
+        })
+        .sort((a, b) => a.availableBalance - b.availableBalance) // Use smaller balances first
+
+      logs.push(`  Order ${order.orderId}: Found ${coilsWithBalance.length} compatible coils with balance`)
+
+      for (const { coil, availableBalance } of coilsWithBalance) {
+        if (remainingOrderWeight <= 0) break
+
+        const compatibleLine = lines.find((line) => {
+          return (
+            coil.width <= line.maxWidth &&
+            coil.width >= line.minWidth &&
+            coil.thickness <= line.maxThickness &&
+            coil.weight <= line.maxWeight
+          )
+        })
+
+        if (!compatibleLine) {
+          console.log(`[v0]   Coil ${coil.coilId}: No compatible line found`)
+          continue
+        }
+
+        const allocatedWeight = Math.min(availableBalance, remainingOrderWeight)
+        const currentUsed = usedCoilCapacity.get(coil.id) || 0
+        const newUsed = currentUsed + allocatedWeight
+        const coilConsumption = (newUsed / coil.weight) * 100
+        const coilBalance = 100 - coilConsumption
+
+        // Update capacity tracking
+        usedCoilCapacity.set(coil.id, newUsed)
+
+        const sideScrap = (coil.width - order.width) * order.length * (allocatedWeight / order.weight)
+        const utilization = (allocatedWeight / coil.weight) * 100
+
+        console.log(`[v0]   Allocating ${allocatedWeight.toFixed(2)} MT from ${coil.coilId} to ${order.orderId}`)
+
+        orderPatterns.push({
+          coilId: coil.id,
+          lineId: compatibleLine.id,
+          orderIds: [order.id],
+          sideScrap,
+          endScrap: 0,
+          utilization,
+          changeoverCost: 100,
+          totalScore: utilization * 10 - sideScrap / 1000 - 100,
+          coilConsumption,
+          coilBalance,
+          isPartialAllocation: true,
+          allocatedWeight,
+          orderAllocations: [
+            {
+              orderId: order.id,
+              allocatedWeight,
+              isPartial: remainingOrderWeight > allocatedWeight,
+            },
+          ],
+        })
+
+        remainingOrderWeight -= allocatedWeight
+        logs.push(`    Allocated ${allocatedWeight.toFixed(2)} MT from ${coil.coilId} (Balance used)`)
+      }
+
+      // Check if order was fulfilled
+      if (remainingOrderWeight <= order.weight * 0.01) {
+        // 99% fulfilled
+        patterns.push(...orderPatterns)
+        fulfilledOrders.push(order.id)
+        logs.push(`  Order ${order.orderId}: FULFILLED using ${orderPatterns.length} coil balance(s)`)
+      } else if (orderPatterns.length > 0) {
+        // Partial fulfillment - still add patterns but don't mark as fulfilled
+        patterns.push(...orderPatterns)
+        const totalAllocated = order.weight - remainingOrderWeight
+        logs.push(
+          `  Order ${order.orderId}: PARTIAL (${totalAllocated.toFixed(2)}/${order.weight.toFixed(2)} MT allocated)`,
+        )
+      } else {
+        logs.push(`  Order ${order.orderId}: No compatible balance coils found`)
+      }
+    }
+
+    return { patterns, fulfilledOrders }
+  }
+
   const runOptimization = () => {
     setLoading(true)
     const logs: string[] = []
@@ -237,8 +360,9 @@ export default function OptimizationEngine() {
     const remainingOrders = new Set(orders.map((o) => o.id))
     const usedCoils = new Set<string>()
 
+    // --- Pass 1: Group orders and find single coil matches ---
     const orderGroups = groupCompatibleOrders(Array.from(remainingOrders))
-    logs.push(`Grouped ${orders.length} orders into ${orderGroups.length} compatible groups`)
+    logs.push(`--- Pass 1: Grouped ${orders.length} orders into ${orderGroups.length} compatible groups ---`)
 
     for (const orderGroup of orderGroups) {
       const groupOrders = orders.filter((o) => orderGroup.includes(o.id))
@@ -271,14 +395,22 @@ export default function OptimizationEngine() {
       if (bestPattern && bestCoilId) {
         patterns.push(bestPattern)
         usedCoils.add(bestCoilId)
-        usedCoilCapacity.set(bestCoilId, coils.find((c) => c.id === bestCoilId)?.weight || 0)
+        const allocatedAmount = bestPattern.allocatedWeight || 0
+        usedCoilCapacity.set(bestCoilId, allocatedAmount)
         orderGroup.forEach((id) => remainingOrders.delete(id))
+
+        const coilInfo = coils.find((c) => c.id === bestCoilId)
+        console.log(
+          `[v0] Pass 1: Coil ${coilInfo?.coilId} - Allocated: ${allocatedAmount.toFixed(2)} MT, Total Weight: ${coilInfo?.weight.toFixed(2)} MT, Balance: ${((coilInfo?.weight || 0) - allocatedAmount).toFixed(2)} MT`,
+        )
+
         logs.push(
-          `Group of ${orderGroup.length} orders assigned to coil with ${bestPattern.utilization.toFixed(1)}% utilization`,
+          `Group of ${orderGroup.length} orders assigned to coil ${coilInfo?.coilId} with ${bestPattern.utilization.toFixed(1)}% utilization`,
         )
       }
     }
 
+    // --- Pass 2: Multi-coil fulfillment for large orders ---
     if (remainingOrders.size > 0) {
       logs.push(`--- Pass 2: Multi-coil fulfillment for ${remainingOrders.size} remaining orders ---`)
 
@@ -319,6 +451,43 @@ export default function OptimizationEngine() {
             )
           }
         }
+      }
+    }
+
+    // --- Pass 3: Allocate pending orders to coil balances ---
+    if (remainingOrders.size > 0) {
+      logs.push(`--- Pass 3: Allocating ${remainingOrders.size} pending orders to coils with available balance ---`)
+
+      console.log(`[v0] Pass 3 Start - usedCoilCapacity:`)
+      coils.forEach((c) => {
+        const used = usedCoilCapacity.get(c.id) || 0
+        const balance = c.weight - used
+        console.log(`[v0]   ${c.coilId}: Used ${used.toFixed(2)} MT, Balance ${balance.toFixed(2)} MT`)
+      })
+
+      console.log(`[v0] Pending orders:`)
+      orders
+        .filter((o) => remainingOrders.has(o.id))
+        .forEach((o) => {
+          console.log(
+            `[v0]   ${o.orderId}: Grade=${o.grade}, Thickness=${o.thickness}, Width=${o.width}, Product=${o.product}, Weight=${o.weight?.toFixed(2)} MT`,
+          )
+        })
+
+      const { patterns: balancePatterns, fulfilledOrders } = allocateOrdersToBalanceCoils(
+        remainingOrders,
+        usedCoilCapacity,
+        logs,
+      )
+
+      if (balancePatterns.length > 0) {
+        patterns.push(...balancePatterns)
+        fulfilledOrders.forEach((orderId) => {
+          remainingOrders.delete(orderId)
+        })
+        logs.push(`Pass 3 complete: ${fulfilledOrders.length} orders allocated to coil balances`)
+      } else {
+        logs.push(`Pass 3: No compatible coil balances found for remaining orders`)
       }
     }
 
@@ -421,7 +590,7 @@ export default function OptimizationEngine() {
             <h2 className="text-xl font-semibold">Optimization Engine</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Run the optimization algorithm to generate optimal coil-to-line assignments with intelligent order
-              grouping and multi-coil fulfillment
+              grouping, multi-coil fulfillment, and balance utilization
             </p>
           </div>
           <Button onClick={runOptimization} disabled={loading || coils.length === 0 || orders.length === 0}>
@@ -466,53 +635,32 @@ export default function OptimizationEngine() {
               const line = lines.find((l) => l.id === pattern.lineId)
               const utilization =
                 typeof pattern.utilization === "number" && isFinite(pattern.utilization) ? pattern.utilization : 0
-              const sideScrap =
-                typeof pattern.sideScrap === "number" && isFinite(pattern.sideScrap) ? pattern.sideScrap : 0
-              const endScrap = typeof pattern.endScrap === "number" && isFinite(pattern.endScrap) ? pattern.endScrap : 0
-              const coilConsumption =
-                typeof pattern.coilConsumption === "number" && isFinite(pattern.coilConsumption)
-                  ? pattern.coilConsumption
-                  : 0
-              const coilBalance =
-                typeof pattern.coilBalance === "number" && isFinite(pattern.coilBalance) ? pattern.coilBalance : 0
-              const totalScore =
-                typeof pattern.totalScore === "number" && isFinite(pattern.totalScore) ? pattern.totalScore : 0
-              const allocatedWeight =
-                typeof pattern.allocatedWeight === "number" && isFinite(pattern.allocatedWeight)
-                  ? pattern.allocatedWeight
-                  : 0
 
               return (
                 <div
                   key={idx}
-                  className={`border rounded-lg p-4 ${pattern.isPartialAllocation ? "border-yellow-400 bg-yellow-50" : "border-border"}`}
+                  className={`rounded-lg border p-4 ${pattern.isPartialAllocation ? "border-yellow-400 bg-yellow-50" : "border-blue-200 bg-blue-50"}`}
                 >
-                  <div className="flex items-start justify-between">
+                  <div className="flex items-center justify-between">
                     <div>
-                      <h4 className="font-semibold flex items-center gap-2">
-                        {coil?.coilId} → {line?.name}
-                        {pattern.isPartialAllocation && (
-                          <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded">Partial</span>
-                        )}
-                      </h4>
-                      <div className="mt-2 grid grid-cols-2 gap-2 text-sm text-muted-foreground">
-                        <div>Utilization: {utilization.toFixed(1)}%</div>
-                        <div>Side Scrap: {(sideScrap / 1000).toFixed(2)} m²</div>
-                        <div>End Scrap: {(endScrap / 1000).toFixed(2)} m²</div>
-                        <div>Orders: {pattern.orderIds.length}</div>
-                        <div>Coil Consumption: {coilConsumption.toFixed(1)}%</div>
-                        <div>Coil Balance: {coilBalance.toFixed(1)}%</div>
-                        {pattern.isPartialAllocation && (
-                          <div className="col-span-2 text-yellow-700">
-                            Allocated Weight: {allocatedWeight.toFixed(2)} MT
-                          </div>
-                        )}
-                      </div>
+                      <span className="font-medium">
+                        Coil: {coil?.coilId || "Unknown"} → Line: {line?.name || "Unknown"}
+                      </span>
+                      {pattern.isPartialAllocation && (
+                        <span className="ml-2 rounded bg-yellow-200 px-2 py-0.5 text-xs text-yellow-800">Partial</span>
+                      )}
                     </div>
-                    <div className="text-right">
-                      <div className="text-lg font-bold text-primary">{totalScore.toFixed(0)}</div>
-                      <div className="text-xs text-muted-foreground">Score</div>
-                    </div>
+                    <span className="text-sm text-muted-foreground">Score: {pattern.totalScore.toFixed(1)}</span>
+                  </div>
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    Orders: {pattern.orderIds.map((id) => orders.find((o) => o.id === id)?.orderId).join(", ")}
+                    {pattern.allocatedWeight && (
+                      <span className="ml-2">| Allocated: {pattern.allocatedWeight.toFixed(2)} MT</span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-sm">
+                    Utilization: {utilization.toFixed(1)}% | Consumption: {pattern.coilConsumption.toFixed(1)}% |
+                    Balance: {pattern.coilBalance.toFixed(1)}%
                   </div>
                 </div>
               )
