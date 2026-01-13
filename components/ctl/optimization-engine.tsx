@@ -32,6 +32,8 @@ export default function OptimizationEngine() {
     useCTL()
   const [loading, setLoading] = useState(false)
   const [optimizationLog, setOptimizationLog] = useState<string[]>([])
+  const [optimizationComplete, setOptimizationComplete] = useState(false)
+  const [assignmentsConfirmed, setAssignmentsConfirmed] = useState(false)
 
   const calculateCuttingPattern = (coilId: string, selectedOrderIds: string[]): CuttingPattern | null => {
     const coil = coils.find((c) => c.id === coilId)
@@ -351,6 +353,8 @@ export default function OptimizationEngine() {
 
   const runOptimization = () => {
     setLoading(true)
+    setOptimizationComplete(false)
+    setAssignmentsConfirmed(false)
     const logs: string[] = []
     const patterns: CuttingPattern[] = []
     const usedCoilCapacity = new Map<string, number>()
@@ -524,6 +528,7 @@ export default function OptimizationEngine() {
     }))
 
     setProposedAssignments(assignments)
+    setOptimizationComplete(true)
     setLoading(false)
   }
 
@@ -582,21 +587,30 @@ export default function OptimizationEngine() {
     return forecasts
   }
 
+  const handleConfirmAll = () => {
+    confirmAssignments()
+    setAssignmentsConfirmed(true)
+  }
+
   return (
     <div className="space-y-6">
       <Card className="p-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-semibold">Optimization Engine</h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Run the optimization algorithm to generate optimal coil-to-line assignments with intelligent order
-              grouping, multi-coil fulfillment, and balance utilization
-            </p>
-          </div>
-          <Button onClick={runOptimization} disabled={loading || coils.length === 0 || orders.length === 0}>
-            <Zap className="mr-2 h-4 w-4" />
-            {loading ? "Optimizing..." : "Run Optimization"}
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-blue-900">Optimization Engine</h3>
+          <Button
+            onClick={runOptimization}
+            disabled={loading || coils.length === 0 || orders.length === 0}
+            className={`w-40 h-10 ${optimizationComplete ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"} text-white`}
+          >
+            <Zap className="w-4 h-4 mr-2" />
+            {loading ? "Optimizing..." : optimizationComplete ? "Optimization Done" : "Run Optimization"}
           </Button>
+        </div>
+        <div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Run the optimization algorithm to generate optimal coil-to-line assignments with intelligent order grouping,
+            multi-coil fulfillment, and balance utilization
+          </p>
         </div>
       </Card>
 
@@ -621,47 +635,67 @@ export default function OptimizationEngine() {
       )}
 
       {proposedAssignments.length > 0 && (
-        <Card className="p-6">
-          <div className="mb-4 flex items-center justify-between">
-            <h3 className="font-semibold">Proposed Assignments ({proposedAssignments.length})</h3>
-            <Button onClick={confirmAssignments} size="sm">
-              <CheckCircle className="mr-2 h-4 w-4" />
-              Confirm All
+        <Card className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-sm">Proposed Assignments ({proposedAssignments.length})</h3>
+            <Button
+              onClick={handleConfirmAll}
+              size="sm"
+              className={`w-40 h-10 ${assignmentsConfirmed ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"} text-white text-xs`}
+            >
+              <CheckCircle className="mr-1 h-3 w-3" />
+              {assignmentsConfirmed ? "Confirmed" : "Confirm All"}
             </Button>
           </div>
-          <div className="space-y-3 max-h-96 overflow-y-auto">
-            {proposedAssignments.map((pattern, idx) => {
-              const coil = coils.find((c) => c.id === pattern.coilId)
-              const line = lines.find((l) => l.id === pattern.lineId)
-              const utilization =
-                typeof pattern.utilization === "number" && isFinite(pattern.utilization) ? pattern.utilization : 0
-
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {proposedAssignments.map((assignment) => {
+              const coil = coils.find((c) => c.id === assignment.coilId)
+              const line = lines.find((l) => l.id === assignment.lineId)
+              const assignedOrders = orders.filter((o) => assignment.orderIds.includes(o.id))
               return (
                 <div
-                  key={idx}
-                  className={`rounded-lg border p-4 ${pattern.isPartialAllocation ? "border-yellow-400 bg-yellow-50" : "border-blue-200 bg-blue-50"}`}
+                  key={assignment.id}
+                  className={`p-2 border rounded-lg text-xs ${assignment.isPartialAllocation ? "bg-yellow-50 border-yellow-200" : "bg-gray-50"}`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="font-medium">
-                        Coil: {coil?.coilId || "Unknown"} → Line: {line?.name || "Unknown"}
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <span className="font-medium text-xs">
+                        {coil?.coilId || "N/A"} → {line?.name || "N/A"}
                       </span>
-                      {pattern.isPartialAllocation && (
-                        <span className="ml-2 rounded bg-yellow-200 px-2 py-0.5 text-xs text-yellow-800">Partial</span>
+                      {assignment.isPartialAllocation && (
+                        <span className="px-1 py-0.5 text-[10px] font-medium bg-yellow-200 text-yellow-800 rounded">
+                          Partial
+                        </span>
                       )}
                     </div>
-                    <span className="text-sm text-muted-foreground">Score: {pattern.totalScore.toFixed(1)}</span>
+                    <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                      {assignment.utilization?.toFixed(1) || 0}%
+                    </span>
                   </div>
-                  <div className="mt-2 text-sm text-muted-foreground">
-                    Orders: {pattern.orderIds.map((id) => orders.find((o) => o.id === id)?.orderId).join(", ")}
-                    {pattern.allocatedWeight && (
-                      <span className="ml-2">| Allocated: {pattern.allocatedWeight.toFixed(2)} MT</span>
-                    )}
+                  <div className="mt-1 text-[10px] text-muted-foreground truncate">
+                    Orders: {assignedOrders.map((o) => o.orderId).join(", ") || "None"}
                   </div>
-                  <div className="mt-1 text-sm">
-                    Utilization: {utilization.toFixed(1)}% | Consumption: {pattern.coilConsumption.toFixed(1)}% |
-                    Balance: {pattern.coilBalance.toFixed(1)}%
+                  <div className="mt-1 text-[10px]">
+                    <span className="text-green-600">
+                      {assignment.coilConsumption?.toFixed(1) || 0}%
+                      {assignment.allocatedWeight && ` (${assignment.allocatedWeight.toFixed(2)}MT)`}
+                    </span>
+                    <span className="mx-1">|</span>
+                    <span className="text-blue-600">Bal: {assignment.coilBalance?.toFixed(1) || 0}%</span>
                   </div>
+                  {assignment.orderAllocations && assignment.orderAllocations.length > 0 && (
+                    <div className="mt-1 text-[10px] text-muted-foreground truncate">
+                      {assignment.orderAllocations.map((oa, idx) => {
+                        const ord = orders.find((o) => o.id === oa.orderId)
+                        return (
+                          <span key={idx}>
+                            {ord?.orderId}: {oa.allocatedWeight.toFixed(2)}MT{oa.isPartial ? "*" : ""}
+                            {idx < assignment.orderAllocations!.length - 1 ? ", " : ""}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )
             })}
