@@ -7,31 +7,54 @@ import { AlertCircle, TrendingUp } from "lucide-react"
 export default function RMForecasting() {
   const { rmForecasts, orders, coils, proposedAssignments, actualAssignments } = useCTL()
 
-  const allAssignments = [...(proposedAssignments || []), ...(actualAssignments || [])]
+  const allAssignments =
+    actualAssignments && actualAssignments.length > 0 ? actualAssignments : proposedAssignments || []
 
   const allCoilsWithDetails = coils.map((coil) => {
-    const assignment = allAssignments.find((a) => a.coilId === coil.id)
-    const isUnused = !assignment
-    const consumedPercentage = isUnused ? 0 : assignment?.coilConsumption || 0
-    const balancePercentage = isUnused ? 100 : assignment?.coilBalance || 0
-    const consumedWeight = (consumedPercentage / 100) * coil.weight
-    const balanceWeight = (balancePercentage / 100) * coil.weight
+    const coilAssignments = allAssignments.filter((a) => a.coilId === coil.id)
+    const isUnused = coilAssignments.length === 0
+
+    let totalConsumedWeight = 0
+
+    // Aggregate weight from all assignments for this coil
+    coilAssignments.forEach((assignment) => {
+      let assignmentWeight = 0
+
+      if (typeof assignment.allocatedWeight === "number" && assignment.allocatedWeight > 0) {
+        assignmentWeight = assignment.allocatedWeight
+      } else if (assignment.orderAllocations && assignment.orderAllocations.length > 0) {
+        // Fallback to sum of orderAllocations
+        assignmentWeight = assignment.orderAllocations.reduce((sum, oa) => sum + (oa.allocatedWeight || 0), 0)
+      } else if (typeof assignment.coilConsumption === "number" && assignment.coilConsumption > 0) {
+        // Last resort: use coilConsumption percentage
+        assignmentWeight = (assignment.coilConsumption / 100) * coil.weight
+      }
+
+      totalConsumedWeight += assignmentWeight
+    })
+
+    const cappedConsumedWeight = Math.min(totalConsumedWeight, coil.weight)
+    const actualBalanceWeight = Math.max(0, coil.weight - cappedConsumedWeight)
+    const actualConsumedPercentage = isUnused ? 0 : (cappedConsumedWeight / coil.weight) * 100
+    const actualBalancePercentage = isUnused ? 100 : (actualBalanceWeight / coil.weight) * 100
+
+    const isFullyUsedBy6PercentRule = !isUnused && actualBalancePercentage < 2
 
     return {
       ...coil,
       isUnused,
-      consumedPercentage,
-      balancePercentage,
-      consumedWeight,
-      balanceWeight,
-      status: isUnused ? "Unused" : balancePercentage === 0 ? "Fully Used" : "Partial",
+      actualConsumedPercentage: Math.min(actualConsumedPercentage, 100),
+      actualBalancePercentage: Math.max(actualBalancePercentage, 0),
+      consumedWeight: cappedConsumedWeight,
+      balanceWeight: actualBalanceWeight,
+      status: isUnused ? "Unused" : isFullyUsedBy6PercentRule ? "Fully Used" : "Partial",
+      isFullyUsedBy6PercentRule,
     }
   })
 
-  // Count statistics
   const unusedCoils = allCoilsWithDetails.filter((c) => c.isUnused)
-  const partialCoils = allCoilsWithDetails.filter((c) => !c.isUnused && c.balancePercentage > 0)
-  const fullyUsedCoils = allCoilsWithDetails.filter((c) => !c.isUnused && c.balancePercentage === 0)
+  const partialCoils = allCoilsWithDetails.filter((c) => c.status === "Partial")
+  const fullyUsedCoils = allCoilsWithDetails.filter((c) => c.status === "Fully Used")
 
   if (rmForecasts.length === 0 && coils.length === 0) {
     return (
@@ -173,7 +196,7 @@ export default function RMForecasting() {
                     ? idx % 2 === 0
                       ? "bg-blue-50"
                       : "bg-blue-100/50"
-                    : coil.balancePercentage === 0
+                    : coil.status === "Fully Used"
                       ? idx % 2 === 0
                         ? "bg-gray-50"
                         : "bg-gray-100/50"
@@ -201,24 +224,26 @@ export default function RMForecasting() {
                           <div className="h-1.5 w-8 bg-gray-200 rounded overflow-hidden">
                             <div
                               className="h-full bg-green-500"
-                              style={{ width: `${Math.min(coil.consumedPercentage, 100)}%` }}
+                              style={{ width: `${Math.min(coil.actualConsumedPercentage, 100)}%` }}
                             />
                           </div>
-                          <span className="text-green-700 font-semibold">{coil.consumedPercentage.toFixed(0)}%</span>
+                          <span className="text-green-700 font-semibold">
+                            {coil.actualConsumedPercentage.toFixed(1)}%
+                          </span>
                         </div>
                       </td>
                       <td className="px-3 py-2 text-center">
                         <div className="flex items-center justify-center gap-1">
                           <div className="h-1.5 w-8 bg-gray-200 rounded overflow-hidden">
                             <div
-                              className={`h-full ${coil.isUnused ? "bg-blue-400" : coil.balancePercentage === 0 ? "bg-gray-400" : "bg-red-500"}`}
-                              style={{ width: `${Math.min(coil.balancePercentage, 100)}%` }}
+                              className={`h-full ${coil.isUnused ? "bg-blue-400" : coil.status === "Fully Used" ? "bg-gray-400" : "bg-red-500"}`}
+                              style={{ width: `${Math.min(coil.actualBalancePercentage, 100)}%` }}
                             />
                           </div>
                           <span
-                            className={`font-semibold ${coil.isUnused ? "text-blue-700" : coil.balancePercentage === 0 ? "text-gray-500" : "text-red-700"}`}
+                            className={`font-semibold ${coil.isUnused ? "text-blue-700" : coil.status === "Fully Used" ? "text-gray-500" : "text-red-700"}`}
                           >
-                            {coil.balancePercentage.toFixed(0)}%
+                            {coil.actualBalancePercentage.toFixed(1)}%
                           </span>
                         </div>
                       </td>
@@ -227,7 +252,7 @@ export default function RMForecasting() {
                           <span className="inline-block bg-blue-200 text-blue-900 px-2 py-0.5 rounded text-xs font-semibold">
                             Unused
                           </span>
-                        ) : coil.balancePercentage === 0 ? (
+                        ) : coil.status === "Fully Used" ? (
                           <span className="inline-block bg-gray-200 text-gray-900 px-2 py-0.5 rounded text-xs font-semibold">
                             Fully Used
                           </span>
@@ -242,6 +267,13 @@ export default function RMForecasting() {
                 })}
               </tbody>
             </table>
+          </div>
+
+          <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mt-2">
+            <p className="text-sm text-yellow-800 font-medium">
+              <span className="font-bold">Note:</span> As Balance % is &lt;2%, it is considered as 100% used (Fully Used
+              status).
+            </p>
           </div>
         </>
       )}
